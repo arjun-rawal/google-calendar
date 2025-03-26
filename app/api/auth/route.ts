@@ -1,13 +1,16 @@
+//auth/route.ts
+
 import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
 
-const CLIENT_ID = ''
-const CLIENT_SECRET = ''
-const REDIRECT_URI = 'http://localhost:3000/api/auth/'
-const OPENAI_KEY = ''
+const CLIENT_ID = process.env.CLIENT_ID || '';
+const CLIENT_SECRET = process.env.CLIENT_SECRET || '';
+const REDIRECT_URI = process.env.REDIRECT_URI || '';
+const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
 
 
-let inMemoryTokens: any = {}
+
+global.inMemoryTokens = global.inMemoryTokens || {};
 
 function getOAuthClient() {
   return new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI)
@@ -41,10 +44,10 @@ export async function GET(request: NextRequest) {
   if (code && !action) {
     try {
       const { tokens } = await oauth2Client.getToken(code)
-      inMemoryTokens = tokens
+      global.inMemoryTokens = tokens
       oauth2Client.setCredentials(tokens)
 
-      return NextResponse.redirect(new URL('/', request.url))
+      return NextResponse.redirect(new URL('/chat', request.url))
     } catch (error: any) {
       console.error('Error exchanging code for tokens:', error)
       return new NextResponse(error.message || 'Token exchange failed', { status: 500 })
@@ -53,7 +56,7 @@ export async function GET(request: NextRequest) {
 
   if (action === 'listEvents') {
     try {
-      oauth2Client.setCredentials(inMemoryTokens)
+      oauth2Client.setCredentials(global.inMemoryTokens)
       const calendar = google.calendar({ version: 'v3', auth: oauth2Client })
       const now = new Date().toISOString()
 
@@ -84,7 +87,7 @@ export async function POST(request: NextRequest) {
     try {
       const { topic, days, time } = await request.json()
       const oauth2Client = getOAuthClient()
-      oauth2Client.setCredentials(inMemoryTokens)
+      oauth2Client.setCredentials(global.inMemoryTokens)
 
       if (!OPENAI_KEY) {
         throw new Error('Missing OPENAI_API_KEY in environment')
