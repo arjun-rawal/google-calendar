@@ -1,4 +1,3 @@
-// app/chat/page.jsx
 'use client';
 
 import React, { useState, useEffect } from 'react';
@@ -9,7 +8,6 @@ export default function ChatPage() {
   const [loggedIn, setLoggedIn] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // Check sign-in status on mount.
   useEffect(() => {
     async function checkLogin() {
       try {
@@ -32,12 +30,11 @@ export default function ChatPage() {
   };
 
   const { messages, input, handleInputChange, handleSubmit } = useChat({
-    // You can set initialMessages to guide the conversation.
     initialMessages: [
       {
         role: 'system',
         content:    
-          'Welcome! To get started, please tell me your study plan request in the format: "I want a study plan for {topic} for {length} days."',
+          'Welcome!',
       },
     ],
   });
@@ -68,7 +65,7 @@ export default function ChatPage() {
       <h2>Study Plan Chatbot</h2>
       <div style={{ border: '1px solid #ccc', padding: '1rem', minHeight: '300px' }}>
         {messages.map((msg) => (
-          <div key={msg.id} style={{ marginBottom: '0.5rem' }}>
+          <div key={msg.content} style={{ marginBottom: '0.5rem' }}>
             <strong>{msg.role === 'user' ? 'User' : 'Bot'}:</strong>
             <ReactMarkdown>{msg.content}</ReactMarkdown>
           </div>

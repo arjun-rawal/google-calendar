@@ -1,5 +1,7 @@
-//auth/route.ts
 
+
+
+//fix up this file, lot of random extra stuff that can be deleted
 import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
 
@@ -100,7 +102,7 @@ export async function POST(request: NextRequest) {
           Authorization: `Bearer ${OPENAI_KEY}`,
         },
         body: JSON.stringify({
-          model: 'gpt-3.5-turbo',
+          model: 'gpt-4o',
           messages: [
             {
               role: 'user',
