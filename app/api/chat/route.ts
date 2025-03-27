@@ -35,11 +35,11 @@ export const generateAndAddCalendarEventTool = tool({
     )
     console.log("HERE1")
     if (!global.inMemoryTokens) {
-      throw new Error('User not authenticated for Google Calendar')
+      throw new Error('User not authenticated for gcal')
     }
     oauth2Client.setCredentials(global.inMemoryTokens)
 
-    console.log('[generateAndAddCalendarEventTool] Generating subtopics from OpenAI...')
+    console.log('Generating subtopics from OpenAI')
     const openAiRes = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -74,7 +74,7 @@ export const generateAndAddCalendarEventTool = tool({
 
  
 
-    console.log('[generateAndAddCalendarEventTool] Creating Calendar events...')
+    console.log('Creating Calendar events')
     const calendar = google.calendar({ version: 'v3', auth: oauth2Client })
 
     const [hours, mins] = time.split(':').map((part) => parseInt(part, 10))
@@ -108,7 +108,7 @@ export const generateAndAddCalendarEventTool = tool({
       createdEvents.push(response.data)
     }
 
-    console.log('[generateAndAddCalendarEventTool] Done creating events.')
+    console.log('Created events.')
 
     return {
       status: 'success',
@@ -129,7 +129,7 @@ export async function POST(req: Request) {
     tools: {
       generateAndAddCalendarEvent: generateAndAddCalendarEventTool,
     },
-    maxSteps: 5,
+    maxSteps: 10,
   });
 
   return result.toDataStreamResponse();
