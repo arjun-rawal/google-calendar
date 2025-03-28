@@ -72,70 +72,93 @@ export async function GET(request: NextRequest) {
 
   if (action === 'freeBusy') {
     try {
-      oauth2Client.setCredentials(global.inMemoryTokens)
-      const calendar = google.calendar({ version: 'v3', auth: oauth2Client })
-
-      let timeMin = url.searchParams.get('timeMin')
-      let timeMax = url.searchParams.get('timeMax')
-
-      const now = new Date()
-      if (!timeMin) timeMin = now.toISOString()
-      if (!timeMax) {
-        const sevenDaysFromNow = new Date(now)
-        sevenDaysFromNow.setDate(sevenDaysFromNow.getDate() + 7)
-        timeMax = sevenDaysFromNow.toISOString()
-      }
-
-      const fbResponse = await calendar.freebusy.query({
-        requestBody: {
-          timeMin,
-          timeMax,
-          items: [{ id: 'primary' }],
-        },
-      })
-
-      const busyArray = fbResponse.data.calendars?.['primary']?.busy || []
-
-      busyArray.sort(
-        (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
-      )
-
-      const freeSlots = []
-      let lastEnd = new Date(timeMin)
-
-      for (const busySlot of busyArray) {
-        const busyStart = new Date(busySlot.start)
-        const busyEnd = new Date(busySlot.end)
-
-        if (busyStart > lastEnd) {
+      oauth2Client.setCredentials(global.inMemoryTokens);
+      const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+  
+      let timeMin = parseInt(url.searchParams.get('timeMin'), 10); 
+      let timeMax = parseInt(url.searchParams.get('timeMax'), 10); 
+      let length = parseInt(url.searchParams.get('length'), 10);
+  
+      if (isNaN(timeMin)) timeMin = 9;  
+      if (isNaN(timeMax)) timeMax = 17; 
+      if (!length || length < 1) length = 1;
+  
+      const allDaysFreeSlots = [];
+  
+      // For each day from tomorrow up to "length" days out
+      for (let i = 1; i <= length; i++) {
+        // Build Date objects for the day's start/end times
+        const dayStart = new Date();
+        dayStart.setDate(dayStart.getDate() + i);
+        dayStart.setHours(timeMin, 0, 0, 0); // set to timeMin:00
+  
+        const dayEnd = new Date();
+        dayEnd.setDate(dayEnd.getDate() + i);
+        dayEnd.setHours(timeMax, 0, 0, 0); // set to timeMax:00
+  
+        // Freebusy query for just that one day’s time range
+        const fbResponse = await calendar.freebusy.query({
+          requestBody: {
+            timeMin: dayStart.toISOString(),
+            timeMax: dayEnd.toISOString(),
+            items: [{ id: 'primary' }],
+          },
+        });
+  
+        // Extract and sort busy times
+        const busyArray =
+          fbResponse.data.calendars?.['primary']?.busy?.sort(
+            (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
+          ) || [];
+  
+        // Build free slots from the busy times
+        const freeSlots = [];
+        let lastEnd = new Date(dayStart);
+  
+        for (const busySlot of busyArray) {
+          const busyStart = new Date(busySlot.start);
+          const busyEnd = new Date(busySlot.end);
+  
+          // If there's a gap between the last free time and this busy start, record it
+          if (busyStart > lastEnd) {
+            freeSlots.push({
+              start: lastEnd.toISOString(),
+              end: busyStart.toISOString(),
+            });
+          }
+          // Move lastEnd pointer if this busy event ends after lastEnd
+          if (busyEnd > lastEnd) {
+            lastEnd = busyEnd;
+          }
+        }
+  
+        // If there's free time after the last busy slot up to dayEnd
+        if (lastEnd < dayEnd) {
           freeSlots.push({
             start: lastEnd.toISOString(),
-            end: busyStart.toISOString(),
-          })
+            end: dayEnd.toISOString(),
+          });
         }
-
-        if (busyEnd > lastEnd) {
-          lastEnd = busyEnd
-        }
+  
+        // Store the free slots (and date) for this day
+        allDaysFreeSlots.push({
+          date: dayStart.toISOString().split('T')[0], // e.g. "YYYY-MM-DD"
+          free: freeSlots,
+        });
       }
-
-      const maxEnd = new Date(timeMax)
-      if (lastEnd < maxEnd) {
-        freeSlots.push({
-          start: lastEnd.toISOString(),
-          end: maxEnd.toISOString(),
-        })
-      }
-
+  
       return NextResponse.json({
-        busy: busyArray,
-        free: freeSlots,
-      })
-    } catch (error: any) {
-      console.error('Error getting free/busy data:', error)
-      return new NextResponse(error.message || 'Failed to get free/busy data', { status: 500 })
+        free: allDaysFreeSlots,
+      });
+    } catch (error) {
+      console.error('Error getting free/busy data:', error);
+      return new NextResponse(error.message || 'Failed to get free/busy data', {
+        status: 500,
+      });
     }
   }
+  
+  
 
   return new NextResponse('Unknown or unsupported action.', { status: 400 })
 }

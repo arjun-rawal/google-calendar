@@ -35,17 +35,17 @@ export default function ChatPage() {
         console.log("PLAN SCHED START")
 
         const { subtopics, topic, planDuration, lessonDuration, timePreference } = args;
-        
+        let targetHour = 8; 
+        if (timePreference === 'afternoon') targetHour = 12;
+        if (timePreference === 'evening') targetHour = 17;
         try {
-          const freeBusyRes = await fetch('/api/auth?action=freeBusy');
+          const freeBusyRes = await fetch(`/api/auth?action=freeBusy&timeMin=${targetHour}&timeMax=${targetHour+4}&length=${planDuration}`);
           if (!freeBusyRes.ok) {
             return `I couldn't retrieve your availability. Could you please try again?`;
           }
           const freeBusyData = await freeBusyRes.json();
-
-          let targetHour = 9; 
-          if (timePreference === 'afternoon') targetHour = 14;
-          if (timePreference === 'evening') targetHour = 19;
+          console.log(freeBusyData)
+         
 
           const events = [];
           const now = new Date();
