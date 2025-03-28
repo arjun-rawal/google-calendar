@@ -1,61 +1,47 @@
 import { z } from 'zod'
 import { tool, streamText } from 'ai'
 import { openai } from '@ai-sdk/openai'
-import { google } from 'googleapis'
 
-export const generateAndAddCalendarEventTool = tool({
+
+export const createPlanTool = tool({
   description: `
-    Generates ${'length'} subtopics for a given topic and creates Google Calendar events for each subtopic over ${'length'} days.
-    Each event lasts "duration" (in minutes) and starts at "time" on each day.
+  Gathers the necessary details for a study plan:
+    - topic
+    - planDuration (number of days)
+    - lessonDuration (in minutes for each lesson)
+    - timePreference (morning, afternoon, evening).
+  Calls OpenAI to get {planDuration} subtopics for "topic".
+
+  DO THIS BEFORE OTHER TOOLS
   `,
   parameters: z.object({
-    topic: z.string().describe('The main study topic'),
-    length: z.number().describe('How many days (number of subtopics)'),
-    duration: z.number().describe('Length of each event in minutes, e.g. 60'),
-    time: z
-      .string()
-      .describe('Start time for each day, e.g. "07:00" or "14:00" (24-hour format)'),
+    topic: z.string().describe('Topic to plan for, "Linear Algebra"'),
+    planDuration: z.number().describe('Number of days'),
+    lessonDuration: z.number().describe('Duration of each lesson/event in minutes'),
+    timePreference: z.enum(['morning', 'afternoon', 'evening'])
+      .describe('Preferred time of day for lessons'),
   }),
-  execute: async ({ topic, length, duration, time }) => {
-    console.log('[generateAndAddCalendarEventTool] Start')
-
-    const CLIENT_ID = process.env.CLIENT_ID || ''
-    const CLIENT_SECRET = process.env.CLIENT_SECRET || ''
-    const REDIRECT_URI = process.env.REDIRECT_URI || ''
-    const OPENAI_KEY = process.env.OPENAI_API_KEY || ''
-
-    if (!OPENAI_KEY) {
-      throw new Error('Missing OPENAI_KEY in environment.')
+  execute: async ({ topic, planDuration, lessonDuration, timePreference }) => {
+    if (!process.env.OPENAI_API_KEY) {
+      throw new Error('Missing OPENAI_API_KEY in environment.')
     }
 
-    const oauth2Client = new google.auth.OAuth2(
-      CLIENT_ID,
-      CLIENT_SECRET,
-      REDIRECT_URI
-    )
-    console.log("HERE1")
-    if (!global.inMemoryTokens) {
-      throw new Error('User not authenticated for gcal')
-    }
-    oauth2Client.setCredentials(global.inMemoryTokens)
-
-    console.log('Generating subtopics from OpenAI')
     const openAiRes = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${OPENAI_KEY}`,
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: 'gpt-4o',
+        model: 'gpt-4',
         messages: [
           {
             role: 'user',
-            content: `Generate ${length} concise subtopics for "${topic}". Return each subtopic on its own line.`,
+            content: `Generate ${planDuration} concise subtopics for "${topic}". Return each subtopic on its own line.`,
           },
         ],
         temperature: 0.7,
-        max_tokens: 200,
+        max_tokens: 300,
       }),
     })
 
@@ -72,65 +58,68 @@ export const generateAndAddCalendarEventTool = tool({
       .map((line: string) => line.trim())
       .filter((line: string) => line.length > 0)
 
- 
-
-    console.log('Creating Calendar events')
-    const calendar = google.calendar({ version: 'v3', auth: oauth2Client })
-
-    const [hours, mins] = time.split(':').map((part) => parseInt(part, 10))
-    const now = new Date()
-    const createdEvents = []
-
-    for (let day = 1; day <= length; day++) {
-      const eventDate = new Date(now)
-      eventDate.setDate(now.getDate() + day)
-      eventDate.setHours(hours)
-      eventDate.setMinutes(mins)
-      eventDate.setSeconds(0)
-
-      const endDate = new Date(eventDate)
-      endDate.setMinutes(endDate.getMinutes() + duration)
-
-      const subtopic = subtopics[day - 1] || `Subtopic ${day}`
-
-      const newEvent = {
-        summary: `Day ${day} of ${topic}`,
-        description: subtopic,
-        start: { dateTime: eventDate.toISOString() },
-        end: { dateTime: endDate.toISOString() },
-      }
-
-      const response = await calendar.events.insert({
-        calendarId: 'primary',
-        requestBody: newEvent,
-      })
-
-      createdEvents.push(response.data)
-    }
-
-    console.log('Created events.')
-
     return {
       status: 'success',
-      message: `Created ${createdEvents.length} events for "${topic}"!`,
+      message: `Created a plan with ${planDuration} subtopics for "${topic}"`,
       subtopics,
-      events: createdEvents,
+      topic,
+      planDuration,
+      lessonDuration,
+      timePreference,
     }
   },
 })
 
+export const schedulePlanTool = tool({
+  description:"DO THIS AFTER THE USER IS GOOD WITH THE SUBTOPICS FROM createPlanTool"
+
+  ,
+  parameters: z.object({
+    topic: z.string().describe('Topic to plan for, "Linear Algebra"'),
+    planDuration: z.number().describe('Number of days'),
+    lessonDuration: z.number().describe('Duration of each lesson/event in minutes'),
+    timePreference: z.enum(['morning', 'afternoon', 'evening'])
+      .describe('Preferred time of day for lessons'),
+    subtopics: z.array(z.string())
+  })
+})
+const eventSchema = z.object({
+  summary: z.string(),
+  description: z.string(),
+  start: z.object({
+    dateTime: z.string().datetime(),
+  }),
+  end: z.object({
+    dateTime: z.string().datetime(),
+  }),
+});
+export const confirmScheduleTool = tool({
+  description:"DO THIS AFTER THE USER CONFIRMS THE SCHEDULED PLAN",
+    parameters: z.object({
+    topic: z.string().describe('Topic to plan for, "Linear Algebra"'),
+    planDuration: z.number().describe('Number of days'),
+    lessonDuration: z.number().describe('Duration of each lesson/event in minutes'),
+    timePreference: z.enum(['morning', 'afternoon', 'evening'])
+      .describe('Preferred time of day for lessons'),
+    events: z.array(eventSchema)
+  })
+})
+
+
 
 export async function POST(req: Request) {
-  const { messages } = await req.json();
+  const { messages } = await req.json()
 
   const result = streamText({
-    model: openai('gpt-4o'),
+    model: openai('gpt-4'),
     messages,
     tools: {
-      generateAndAddCalendarEvent: generateAndAddCalendarEventTool,
+      createPlanTool,
+      schedulePlanTool,
+      confirmScheduleTool,
     },
     maxSteps: 10,
-  });
+  })
 
-  return result.toDataStreamResponse();
+  return result.toDataStreamResponse()
 }

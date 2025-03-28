@@ -1,18 +1,11 @@
-
-
-
-//fix up this file, lot of random extra stuff that can be deleted
 import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
 
-const CLIENT_ID = process.env.CLIENT_ID || '';
-const CLIENT_SECRET = process.env.CLIENT_SECRET || '';
-const REDIRECT_URI = process.env.REDIRECT_URI || '';
-const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
+const CLIENT_ID = process.env.CLIENT_ID || ''
+const CLIENT_SECRET = process.env.CLIENT_SECRET || ''
+const REDIRECT_URI = process.env.REDIRECT_URI || ''
 
-
-
-global.inMemoryTokens = global.inMemoryTokens || {};
+global.inMemoryTokens = global.inMemoryTokens || {}
 
 function getOAuthClient() {
   return new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI)
@@ -28,8 +21,8 @@ export async function GET(request: NextRequest) {
   const getAuthUrl = () => {
     const scopes = [
       'https://www.googleapis.com/auth/calendar.events',
-      'https://www.googleapis.com/auth/classroom.courses',
       'https://www.googleapis.com/auth/userinfo.email',
+      'https://www.googleapis.com/auth/calendar',
     ]
     return oauth2Client.generateAuthUrl({
       access_type: 'offline',
@@ -77,102 +70,103 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  if (action === 'freeBusy') {
+    try {
+      oauth2Client.setCredentials(global.inMemoryTokens)
+      const calendar = google.calendar({ version: 'v3', auth: oauth2Client })
+
+      let timeMin = url.searchParams.get('timeMin')
+      let timeMax = url.searchParams.get('timeMax')
+
+      const now = new Date()
+      if (!timeMin) timeMin = now.toISOString()
+      if (!timeMax) {
+        const sevenDaysFromNow = new Date(now)
+        sevenDaysFromNow.setDate(sevenDaysFromNow.getDate() + 7)
+        timeMax = sevenDaysFromNow.toISOString()
+      }
+
+      const fbResponse = await calendar.freebusy.query({
+        requestBody: {
+          timeMin,
+          timeMax,
+          items: [{ id: 'primary' }],
+        },
+      })
+
+      const busyArray = fbResponse.data.calendars?.['primary']?.busy || []
+
+      busyArray.sort(
+        (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
+      )
+
+      const freeSlots = []
+      let lastEnd = new Date(timeMin)
+
+      for (const busySlot of busyArray) {
+        const busyStart = new Date(busySlot.start)
+        const busyEnd = new Date(busySlot.end)
+
+        if (busyStart > lastEnd) {
+          freeSlots.push({
+            start: lastEnd.toISOString(),
+            end: busyStart.toISOString(),
+          })
+        }
+
+        if (busyEnd > lastEnd) {
+          lastEnd = busyEnd
+        }
+      }
+
+      const maxEnd = new Date(timeMax)
+      if (lastEnd < maxEnd) {
+        freeSlots.push({
+          start: lastEnd.toISOString(),
+          end: maxEnd.toISOString(),
+        })
+      }
+
+      return NextResponse.json({
+        busy: busyArray,
+        free: freeSlots,
+      })
+    } catch (error: any) {
+      console.error('Error getting free/busy data:', error)
+      return new NextResponse(error.message || 'Failed to get free/busy data', { status: 500 })
+    }
+  }
+
   return new NextResponse('Unknown or unsupported action.', { status: 400 })
 }
-
 
 export async function POST(request: NextRequest) {
   const url = new URL(request.url)
   const action = url.searchParams.get('action')
 
-  if (action === 'generateAndAdd') {
+  if (action === 'addEvents') {
     try {
-      const { topic, days, time } = await request.json()
+      const { events } = await request.json()
       const oauth2Client = getOAuthClient()
       oauth2Client.setCredentials(global.inMemoryTokens)
 
-      if (!OPENAI_KEY) {
-        throw new Error('Missing OPENAI_API_KEY in environment')
-      }
-
-      const openAiRes = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${OPENAI_KEY}`,
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o',
-          messages: [
-            {
-              role: 'user',
-              content: `Generate ${days} concise subtopics for "${topic}". Return each subtopic on its own line.`,
-            },
-          ],
-          temperature: 0.7,
-          max_tokens: 200,
-        }),
-      })
-
-      if (!openAiRes.ok) {
-        const errText = await openAiRes.text()
-        console.error('OpenAI Error:', errText)
-        throw new Error('OpenAI API call failed')
-      }
-
-      const openAiJson = await openAiRes.json()
-      const raw = openAiJson.choices?.[0]?.message?.content || ''
-      const subtopics = raw
-        .split('\n')
-        .map((line: string) => line.trim())
-        .filter((line: string) => line.length > 0)
-
-      if (subtopics.length < parseInt(days)) {
-        console.warn('OpenAI returned fewer subtopics than requested. Using best guess.')
-      }
-
       const calendar = google.calendar({ version: 'v3', auth: oauth2Client })
-
-      const [hours, minutes] = time.split(':').map((part: string) => Number(part))
-      const totalDays = parseInt(days, 10)
-
-      const now = new Date() 
       const createdEvents = []
 
-      for (let i = 1; i <= totalDays; i++) {
-        const eventDate = new Date(now)
-        eventDate.setDate(now.getDate() + i)
-        eventDate.setHours(hours)
-        eventDate.setMinutes(minutes)
-        eventDate.setSeconds(0)
-
-        const endDate = new Date(eventDate)
-        endDate.setHours(hours + 1)
-
-        const subtopic = subtopics[i - 1] || `Subtopic ${i}`
-
-        const newEvent = {
-          summary: `Day ${i} of ${topic}`,
-          description: subtopic,
-          start: { dateTime: eventDate.toISOString() },
-          end: { dateTime: endDate.toISOString() },
-        }
-
+      for (const evt of events) {
         const response = await calendar.events.insert({
           calendarId: 'primary',
-          requestBody: newEvent,
+          requestBody: evt,
         })
-
         createdEvents.push(response.data)
       }
 
       return NextResponse.json({
-        msg: `Created ${createdEvents.length} events for "${topic}"!`,
+        msg: `Added ${createdEvents.length} events successfully!`,
         events: createdEvents,
-        subtopics,
       })
     } catch (error: any) {
-      console.error('Error generating & adding events:', error)
+      console.error('Error adding events:', error)
       return new NextResponse(error.message || 'Event creation failed', { status: 500 })
     }
   }

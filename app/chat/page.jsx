@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect } from 'react';
 import { useChat } from '@ai-sdk/react';
-import ReactMarkdown from 'react-markdown';
 
 export default function ChatPage() {
   const [loggedIn, setLoggedIn] = useState(false);
@@ -12,11 +11,7 @@ export default function ChatPage() {
     async function checkLogin() {
       try {
         const res = await fetch('/api/auth?action=listEvents');
-        if (res.status === 401) {
-          setLoggedIn(false);
-        } else {
-          setLoggedIn(true);
-        }
+        setLoggedIn(res.status !== 401);
       } catch (err) {
         setLoggedIn(false);
       }
@@ -25,63 +20,122 @@ export default function ChatPage() {
     checkLogin();
   }, []);
 
-  const handleSignIn = () => {
-    window.location.href = '/api/auth';
-  };
+  const { 
+    messages, 
+    input, 
+    handleInputChange, 
+    handleSubmit, 
+    error 
+  } = useChat({
+    api: '/api/chat',
+    
+    async onToolCall({ toolCall }) {
+      const { toolName, args } = toolCall;
+      if (toolName === 'schedulePlanTool') {
+        console.log("PLAN SCHED START")
 
-  const { messages, input, handleInputChange, handleSubmit } = useChat({
-    initialMessages: [
-      {
-        role: 'system',
-        content:    
-          'Welcome!',
-      },
-    ],
+        const { subtopics, topic, planDuration, lessonDuration, timePreference } = args;
+        
+        try {
+          const freeBusyRes = await fetch('/api/auth?action=freeBusy');
+          if (!freeBusyRes.ok) {
+            return `I couldn't retrieve your availability. Could you please try again?`;
+          }
+          const freeBusyData = await freeBusyRes.json();
+
+          let targetHour = 9; 
+          if (timePreference === 'afternoon') targetHour = 14;
+          if (timePreference === 'evening') targetHour = 19;
+
+          const events = [];
+          const now = new Date();
+          for (let i = 0; i < subtopics.length; i++) {
+            const dayStart = new Date(now);
+            dayStart.setDate(now.getDate() + (i + 1));
+            dayStart.setHours(targetHour);
+            dayStart.setMinutes(0);
+            dayStart.setSeconds(0);
+
+            const dayEnd = new Date(dayStart);
+            dayEnd.setMinutes(dayEnd.getMinutes() + lessonDuration);
+
+            events.push({
+              summary: `Day ${i + 1} of ${topic}`,
+              description: subtopics[i] || `Subtopic #${i+1}`,
+              start: { dateTime: dayStart.toISOString() },
+              end: { dateTime: dayEnd.toISOString() },
+            });
+          }
+          console.log("PLAN SCHED DONE", events)
+          return { events };
+        } catch (error) {
+          console.error('Scheduling error:', error);
+          return `Try again`;
+        }
+      }
+
+      if (toolName === 'confirmScheduleTool') {
+        const { events } = args;
+        console.log("CONFIRMSCHEDSTART")
+        console.log(events)
+        try {
+          const res = await fetch('/api/auth?action=addEvents', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ events }),
+          });
+          console.log("CONFIRMSCHEDEND")
+
+          if (res.ok) {
+            return 'added the events to your calendar.';
+          } else {
+            return 'unable to add the events to your calendar. Could you please try again?';
+          }
+        } catch (error) {
+          console.error('Confirmation error:', error);
+          return 'try again.';
+        }
+      }
+    },
+    
+    onError: (err) => {
+      console.error('Chat error:', err);
+    }
   });
+
+  useEffect(() => {
+    if (!loggedIn && !loading) {
+      window.location.href = '/api/auth';
+    }
+  }, [loggedIn, loading]);
 
   if (loading) return <div>Loading...</div>;
 
-  if (!loggedIn) {
-    return (
-      <div
-        style={{
-          width: '100vw',
-          height: '100vh',
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          fontFamily: 'sans-serif',
-        }}
-      >
-        <button onClick={handleSignIn} style={{ padding: '1rem 2rem', fontSize: '1.2rem' }}>
-          Sign In with Google
-        </button>
-      </div>
-    );
-  }
-
   return (
-    <div style={{ maxWidth: '600px', margin: '0 auto', padding: '1rem' }}>
-      <h2>Study Plan Chatbot</h2>
-      <div style={{ border: '1px solid #ccc', padding: '1rem', minHeight: '300px' }}>
-        {messages.map((msg) => (
-          <div key={msg.content} style={{ marginBottom: '0.5rem' }}>
-            <strong>{msg.role === 'user' ? 'User' : 'Bot'}:</strong>
-            <ReactMarkdown>{msg.content}</ReactMarkdown>
+    <div className="container mx-auto max-w-xl p-4">
+      
+
+      <div>
+        {messages.map((m, index) => (
+          <div 
+            key={index} 
+            className={`mb-2 p-2 rounded ${
+              m.role === 'user' ? 'bg-blue-100' : 'bg-gray-100'
+            }`}
+          >
+            <strong>{m.role === 'user' ? 'You' : 'AI'}:</strong> 
+            {m.content}
           </div>
         ))}
       </div>
-      <form onSubmit={handleSubmit} style={{ marginTop: '1rem' }}>
+
+      <form onSubmit={handleSubmit} className="fixed bottom-0 left-0 right-0 max-w-xl mx-auto p-4 bg-white">
         <input
-          type="text"
-          placeholder="Type your message..."
           value={input}
           onChange={handleInputChange}
-          style={{ width: '80%', padding: '0.5rem' }}
+          placeholder="Ask me to create a learning plan..."
+          className="w-full p-2 border rounded"
         />
-        <button type="submit" style={{ padding: '0.5rem 1rem' }}>
-          Send
-        </button>
       </form>
     </div>
   );
