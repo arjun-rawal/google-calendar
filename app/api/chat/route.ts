@@ -1,7 +1,49 @@
 import { z } from 'zod'
 import { tool, streamText } from 'ai'
 import { openai } from '@ai-sdk/openai'
+import path from 'path'
+import { readFile } from 'fs/promises'
+import natural from 'natural'
+import similarity from 'compute-cosine-similarity'
 
+async function loadKeywords() {
+  const filePath = path.join(process.cwd(), 'public', 'data', 'summaries.json')
+  const fileContent = await readFile(filePath, 'utf-8')
+  return JSON.parse(fileContent) 
+}
+
+function computeRelevantSubtopics(
+  topic: string,
+  subtopics: Array<{ name: string; summary: string }>,
+  days: number
+) {
+  const tokenizer = new natural.WordTokenizer()
+  const topicTokens = tokenizer.tokenize(topic.toLowerCase())
+  const subtopicTokens = subtopics.map((s) =>
+    tokenizer.tokenize(`${s.name} ${s.summary}`.toLowerCase())
+  )
+
+  const allWords = new Set([...topicTokens, ...subtopicTokens.flat()])
+  const wordsArray = Array.from(allWords)
+
+  const tf = (tokens: string[]) =>
+    wordsArray.map((word) => tokens.filter((t) => t === word).length)
+
+  const topicVector = tf(topicTokens)
+  const subtopicVectors = subtopicTokens.map(tf)
+
+  const similarityScores = subtopicVectors.map((vec) =>
+    similarity(topicVector, vec)
+  )
+
+  return subtopics
+    .map((subtopic, index) => ({
+      ...subtopic,
+      similarityScore: similarityScores[index],
+    }))
+    .sort((a, b) => b.similarityScore - a.similarityScore)
+    .slice(0, days)
+}
 
 export const createPlanTool = tool({
   description: `
@@ -10,9 +52,7 @@ export const createPlanTool = tool({
     - planDuration (number of days)
     - lessonDuration (in minutes for each lesson)
     - timePreference (morning, afternoon, evening).
-  Calls OpenAI to get {planDuration} subtopics for "topic".
-
-  DO THIS BEFORE OTHER TOOLS
+  Calls local JSON to get {planDuration} subtopics for "topic".
   `,
   parameters: z.object({
     topic: z.string().describe('Topic to plan for, "Linear Algebra"'),
@@ -22,41 +62,10 @@ export const createPlanTool = tool({
       .describe('Preferred time of day for lessons'),
   }),
   execute: async ({ topic, planDuration, lessonDuration, timePreference }) => {
-    if (!process.env.OPENAI_API_KEY) {
-      throw new Error('Missing OPENAI_API_KEY in environment.')
-    }
-
-    const openAiRes = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: 'gpt-4',
-        messages: [
-          {
-            role: 'user',
-            content: `Generate ${planDuration} concise subtopics for "${topic}". Return each subtopic on its own line.`,
-          },
-        ],
-        temperature: 0.7,
-        max_tokens: 300,
-      }),
-    })
-
-    if (!openAiRes.ok) {
-      const errText = await openAiRes.text()
-      console.error('OpenAI Error:', errText)
-      throw new Error('OpenAI API call failed')
-    }
-
-    const openAiJson = await openAiRes.json()
-    const raw = openAiJson.choices?.[0]?.message?.content || ''
-    const subtopics = raw
-      .split('\n')
-      .map((line: string) => line.trim())
-      .filter((line: string) => line.length > 0)
+   
+    const keywords = await loadKeywords()
+    const relevantSubtopics = computeRelevantSubtopics(topic, keywords, planDuration)
+    const subtopics = relevantSubtopics.map((s) => s.name)
 
     return {
       status: 'success',
@@ -71,9 +80,7 @@ export const createPlanTool = tool({
 })
 
 export const schedulePlanTool = tool({
-  description:"DO THIS AFTER THE USER IS GOOD WITH THE SUBTOPICS FROM createPlanTool"
-
-  ,
+  description: "DO THIS AFTER THE USER IS GOOD WITH THE SUBTOPICS FROM createPlanTool",
   parameters: z.object({
     topic: z.string().describe('Topic to plan for, "Linear Algebra"'),
     planDuration: z.number().describe('Number of days'),
@@ -83,6 +90,7 @@ export const schedulePlanTool = tool({
     subtopics: z.array(z.string())
   })
 })
+
 const eventSchema = z.object({
   summary: z.string(),
   description: z.string(),
@@ -92,10 +100,11 @@ const eventSchema = z.object({
   end: z.object({
     dateTime: z.string().datetime(),
   }),
-});
+})
+
 export const confirmScheduleTool = tool({
-  description:"DO THIS AFTER THE USER CONFIRMS THE SCHEDULED PLAN",
-    parameters: z.object({
+  description: "DO THIS AFTER THE USER CONFIRMS THE SCHEDULED PLAN",
+  parameters: z.object({
     topic: z.string().describe('Topic to plan for, "Linear Algebra"'),
     planDuration: z.number().describe('Number of days'),
     lessonDuration: z.number().describe('Duration of each lesson/event in minutes'),
@@ -104,8 +113,6 @@ export const confirmScheduleTool = tool({
     events: z.array(eventSchema)
   })
 })
-
-
 
 export async function POST(req: Request) {
   const { messages } = await req.json()

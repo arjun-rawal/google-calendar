@@ -1,11 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
+import { readFile } from 'fs/promises'
+import path from 'path'
 
 const CLIENT_ID = process.env.CLIENT_ID || ''
 const CLIENT_SECRET = process.env.CLIENT_SECRET || ''
 const REDIRECT_URI = process.env.REDIRECT_URI || ''
 
 global.inMemoryTokens = global.inMemoryTokens || {}
+
+async function loadKeywords() {
+  const filePath = path.join(process.cwd(), 'public', 'data', 'summaries.json')
+  const fileContent = await readFile(filePath, 'utf-8')
+  return JSON.parse(fileContent) 
+}
 
 function getOAuthClient() {
   return new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI)
@@ -72,93 +80,82 @@ export async function GET(request: NextRequest) {
 
   if (action === 'freeBusy') {
     try {
-      oauth2Client.setCredentials(global.inMemoryTokens);
-      const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-  
-      let timeMin = parseInt(url.searchParams.get('timeMin'), 10); 
-      let timeMax = parseInt(url.searchParams.get('timeMax'), 10); 
-      let length = parseInt(url.searchParams.get('length'), 10);
-  
-      if (isNaN(timeMin)) timeMin = 9;  
-      if (isNaN(timeMax)) timeMax = 17; 
-      if (!length || length < 1) length = 1;
-  
-      const allDaysFreeSlots = [];
-  
-      // For each day from tomorrow up to "length" days out
+      oauth2Client.setCredentials(global.inMemoryTokens)
+      const calendar = google.calendar({ version: 'v3', auth: oauth2Client })
+
+      let timeMin = parseInt(url.searchParams.get('timeMin') as string, 10)
+      let timeMax = parseInt(url.searchParams.get('timeMax') as string, 10)
+      let length = parseInt(url.searchParams.get('length') as string, 10)
+
+      if (isNaN(timeMin)) timeMin = 9
+      if (isNaN(timeMax)) timeMax = 17
+      if (!length || length < 1) length = 1
+
+      const allDaysFreeSlots = []
+
       for (let i = 1; i <= length; i++) {
-        // Build Date objects for the day's start/end times
-        const dayStart = new Date();
-        dayStart.setDate(dayStart.getDate() + i);
-        dayStart.setHours(timeMin, 0, 0, 0); // set to timeMin:00
-  
-        const dayEnd = new Date();
-        dayEnd.setDate(dayEnd.getDate() + i);
-        dayEnd.setHours(timeMax, 0, 0, 0); // set to timeMax:00
-  
-        // Freebusy query for just that one day’s time range
+        const dayStart = new Date()
+        dayStart.setDate(dayStart.getDate() + i)
+        dayStart.setHours(timeMin, 0, 0, 0)
+
+        const dayEnd = new Date()
+        dayEnd.setDate(dayEnd.getDate() + i)
+        dayEnd.setHours(timeMax, 0, 0, 0)
+
         const fbResponse = await calendar.freebusy.query({
           requestBody: {
             timeMin: dayStart.toISOString(),
             timeMax: dayEnd.toISOString(),
             items: [{ id: 'primary' }],
           },
-        });
-  
-        // Extract and sort busy times
+        })
+
         const busyArray =
           fbResponse.data.calendars?.['primary']?.busy?.sort(
             (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
-          ) || [];
-  
-        // Build free slots from the busy times
-        const freeSlots = [];
-        let lastEnd = new Date(dayStart);
-  
+          ) || []
+
+        const freeSlots = []
+        let lastEnd = new Date(dayStart)
+
         for (const busySlot of busyArray) {
-          const busyStart = new Date(busySlot.start);
-          const busyEnd = new Date(busySlot.end);
-  
-          // If there's a gap between the last free time and this busy start, record it
+          const busyStart = new Date(busySlot.start)
+          const busyEnd = new Date(busySlot.end)
+
           if (busyStart > lastEnd) {
             freeSlots.push({
               start: lastEnd.toISOString(),
               end: busyStart.toISOString(),
-            });
+            })
           }
-          // Move lastEnd pointer if this busy event ends after lastEnd
           if (busyEnd > lastEnd) {
-            lastEnd = busyEnd;
+            lastEnd = busyEnd
           }
         }
-  
-        // If there's free time after the last busy slot up to dayEnd
+
         if (lastEnd < dayEnd) {
           freeSlots.push({
             start: lastEnd.toISOString(),
             end: dayEnd.toISOString(),
-          });
+          })
         }
-  
-        // Store the free slots (and date) for this day
+
         allDaysFreeSlots.push({
-          date: dayStart.toISOString().split('T')[0], // e.g. "YYYY-MM-DD"
+          date: dayStart.toISOString().split('T')[0],
           free: freeSlots,
-        });
+        })
       }
-  
+
       return NextResponse.json({
         free: allDaysFreeSlots,
-      });
+      })
     } catch (error) {
-      console.error('Error getting free/busy data:', error);
+      console.error('Error getting free/busy data:', error)
       return new NextResponse(error.message || 'Failed to get free/busy data', {
         status: 500,
-      });
+      })
     }
   }
-  
-  
 
   return new NextResponse('Unknown or unsupported action.', { status: 400 })
 }
@@ -170,13 +167,27 @@ export async function POST(request: NextRequest) {
   if (action === 'addEvents') {
     try {
       const { events } = await request.json()
+
       const oauth2Client = getOAuthClient()
       oauth2Client.setCredentials(global.inMemoryTokens)
-
       const calendar = google.calendar({ version: 'v3', auth: oauth2Client })
+
+      const keywords = await loadKeywords() 
+
       const createdEvents = []
 
       for (const evt of events) {
+        const matchingSubtopic = keywords.find(
+          (item) => item.name === evt.summary
+        )
+
+        if (matchingSubtopic) {
+          const videoUrl = `https://www.revisiondojo.com/videos/${matchingSubtopic.id}`
+          evt.description = evt.description
+            ? `${evt.description}\nVideo Link: ${videoUrl}`
+            : `Video Link: ${videoUrl}`
+        }
+
         const response = await calendar.events.insert({
           calendarId: 'primary',
           requestBody: evt,
@@ -190,9 +201,13 @@ export async function POST(request: NextRequest) {
       })
     } catch (error: any) {
       console.error('Error adding events:', error)
-      return new NextResponse(error.message || 'Event creation failed', { status: 500 })
+      return new NextResponse(error.message || 'Event creation failed', {
+        status: 500,
+      })
     }
   }
 
-  return new NextResponse('Method not allowed or unknown action.', { status: 405 })
+  return new NextResponse('Method not allowed or unknown action.', {
+    status: 405,
+  })
 }
